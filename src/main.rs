@@ -1,6 +1,5 @@
 use std::env;
-use std::process::exit;
-use crate::ParseState::ExpectedOption;
+use std::process::{exit};
 
 #[derive(Debug)]
 struct CommandArgs {
@@ -87,8 +86,21 @@ fn print_help() {
     println!("{}", help_string);
 }
 
-fn parse_single_option(option: &str, value: &str, command_args: &mut CommandArgs) -> Result<(), String> {
-    println!("Parsed option {option} with value {value}", option = option, value = value);
+/// Flags are options that do not take a value
+fn parse_flag(option: &str, command_args: &mut CommandArgs) -> Result<(), String> {
+    match option {
+        "i" | "ignore-case" => {
+            command_args.ignore_case = true
+        }
+        _ => {
+            return Err(format!("Unexpected flag {option}", option = option));
+        }
+    }
+    Ok(())
+}
+
+/// Options take values
+fn parse_non_flag(option: &str, value: &str, command_args: &mut CommandArgs) -> Result<(), String> {
     match option {
         "A" | "after-context" => {
             let result = value.parse::<u32>();
@@ -104,9 +116,6 @@ fn parse_single_option(option: &str, value: &str, command_args: &mut CommandArgs
                 Ok(v) => command_args.before_context = v
             }
         }
-        "i" | "ignore-case" => {
-            command_args.ignore_case = true
-        }
         _ => {
             return Err(format!("Unexpected option {option}", option = option));
         }
@@ -114,6 +123,7 @@ fn parse_single_option(option: &str, value: &str, command_args: &mut CommandArgs
     Ok(())
 }
 
+/// Whether or not option is not flag
 fn requires_value(option: &str) -> Result<bool, String> {
     return match option {
         "-A" | "--after-context" => {
@@ -135,67 +145,67 @@ fn requires_value(option: &str) -> Result<bool, String> {
     };
 }
 
-enum ParseState {
-    ExpectedOption = 0,
-    ExpectedOptionValue = 1,
-    FilenameAndPattern = 2,
+enum OptionType {
+    FLAG = 0,
+    NONFLAG = 1,
 }
 
+/// Returns error or option type parsed
+fn parse_nonflag_or_flag(argument: &str, args_length: usize, index: usize, args: &Vec<String>, command_args: &mut CommandArgs) -> Result<OptionType, String> {
+    let requires_value = requires_value(argument)?;
+    if requires_value && index + 1 < args_length { // have at least one more argument
+        parse_non_flag(argument, args[index + 1].as_str(), command_args)?;
+        Ok(OptionType::NONFLAG)
+    } else if !requires_value {
+        parse_flag(argument, command_args)?;
+        Ok(OptionType::FLAG)
+    } else {
+        return Err(format!("Option {} requires value but no value is passed", argument));
+    }
+}
+
+
 fn parse_args(args: Vec<String>, command_args: &mut CommandArgs) -> Result<(), String> {
-    let mut current_option = String::from("");
-    let mut captured_query = false;
-    let mut first = true;
-    let mut state: &ParseState = &ParseState::ExpectedOption;
+    // made true after query parsing finished.
+    let mut query_parsed = false;
 
-    for arg in &args {
-        if first { // skip first argument
-            first = false;
-            continue;
-        }
+    // start from 1; so, skip the first argument which is the command name
+    let mut index = 1;
+    while index < args.len() {
+        let arg = &args[index];
 
-        match state {
-            ParseState::ExpectedOption => {
-                if arg.starts_with("--") { // long option
-                    let split: Vec<&str> = arg.split('=').collect();
-                    match split.len() {
-                        // does not have =
-                        1 => current_option = String::from(&arg[2..]),
-                        // has one =
-                        2 => {
-                            parse_single_option(split[0], split[1], command_args)?
-                            state = &ParseState::ExpectedOption
-                        },
-                        // has more than one =, error
-                        _ => return Err(format!("Option {} has more than one equal sign", arg))
-                    }
-                } else if arg.starts_with('-') {
-                    current_option = String::from(&arg[1..]);
-                } else { // should be value or filenames
-                    match captured_query {
-                        // should be filename
-                        true => {
-                            command_args.files.push(arg.clone());
-                        }
-                        // should be query
-                        false => {
-                            command_args.query = arg.clone();
-                            captured_query = true;
+        if query_parsed {
+            command_args.files.push(arg.clone());
+        } else {
+            if arg.starts_with("--") { // long option
+                let split: Vec<&str> = arg.split('=').collect();
+                match split.len() {
+                    // does not have = sign, we need to take two values
+                    1 => {
+                        match parse_nonflag_or_flag(arg, args.len(), index, &args, command_args)? {
+                            OptionType::NONFLAG => index += 1,
+                            OptionType::FLAG => {}
                         }
                     }
+                    // has one = sign
+                    2 => {
+                        parse_non_flag(split[0], split[1], command_args)?;
+                    }
+                    // has more than one = error
+                    _ => return Err(format!("Option {} has more than one equal sign", arg))
                 }
-            },
-            // expected a value to current option
-            ParseState::ExpectedOptionValue => {
-                parse_single_option(current_option.as_str(), arg.as_str(), command_args)?;
-            },
-            _ => {
-
+            } else if arg.starts_with('-') {
+                match parse_nonflag_or_flag(arg, args.len(), index, &args, command_args)? {
+                    OptionType::NONFLAG => index += 1,
+                    OptionType::FLAG => {}
+                }
+            } else { // parse query
+                command_args.query = arg.clone();
+                query_parsed = true;
             }
         }
 
-        if is_option {
-            expecting_value = requires_value(arg)?;
-        }
+        index += 1
     }
 
     Ok(())
